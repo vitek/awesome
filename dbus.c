@@ -800,6 +800,38 @@ luaA_dbus_disconnect_signal(lua_State *L)
     return 0;
 }
 
+static int
+_send_dbus_message_with_lua_args(lua_State *L, DBusConnection *dbus_connection,
+                                 DBusMessage *msg, int args_start)
+{
+    DBusMessageIter iter;
+    dbus_message_iter_init_append(msg, &iter);
+    int top = lua_gettop(L);
+    int nargs = top - args_start - 1;
+
+    if(nargs % 2 != 0)
+    {
+        luaA_warn(L, "your D-Bus method has wrong number of arguments");
+        dbus_message_unref(msg);
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+    for(int i = args_start; i < top; i += 2) {
+        if(!a_dbus_convert_value(L, i, &iter))
+        {
+            luaA_warn(L, "your D-Bus method has bad argument type");
+            dbus_message_unref(msg);
+            lua_pushboolean(L, 0);
+            return 1;
+        }
+    }
+    dbus_connection_send(dbus_connection, msg, NULL);
+    dbus_message_unref(msg);
+    dbus_connection_flush(dbus_connection);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
 /** Emit a signal on the D-Bus.
  *
  * @param bus A string indicating if we are using system or session bus.
@@ -827,32 +859,45 @@ luaA_dbus_emit_signal(lua_State *L)
         return 0;
     }
 
-    DBusMessageIter iter;
-    dbus_message_iter_init_append(msg, &iter);
-    int top = lua_gettop(L);
-    int nargs = top - 4;
+    return _send_dbus_message_with_lua_args(L, dbus_connection, msg, 5);
+}
 
-    if(nargs % 2 != 0)
-    {
-        luaA_warn(L, "your D-Bus signal emitting method has wrong number of arguments");
-        dbus_message_unref(msg);
-        lua_pushboolean(L, 0);
-        return 1;
+/** Call a method on the D-Bus.
+ *
+ * @param bus A string indicating if we are using system or session bus.
+ * @param dest A string with the dbus destination.
+ * @param path A string with the dbus path.
+ * @param interface A string with the dbus interface.
+ * @param method A string with the dbus method name.
+ * @param type_1st_arg type of 1st argument
+ * @param value_1st_arg value of 1st argument
+ * @param type_2nd_arg type of 2nd argument
+ * @param value_2nd_arg value of 2nd argument
+ * ... etc
+ * @function emit_signal
+ */
+static int
+luaA_dbus_method_call(lua_State *L)
+{
+    const char *bus_name = luaL_checkstring(L, 1);
+    const char *dest = luaL_checkstring(L, 2);
+    const char *path = luaL_checkstring(L, 3);
+    const char *itface = luaL_checkstring(L, 4);
+    const char *name = luaL_checkstring(L, 5);
+    DBusConnection *dbus_connection = a_dbus_bus_getbyname(bus_name);
+    DBusMessage* msg = dbus_message_new_method_call(NULL, path, itface, name);
+    if (msg == NULL) {
+        luaA_warn(L, "your D-Bus method error'd");
+        return 0;
     }
-    for(int i = 5; i < top; i += 2) {
-        if(!a_dbus_convert_value(L, i, &iter))
-        {
-            luaA_warn(L, "your D-Bus signal emitting method has bad argument type");
-            dbus_message_unref(msg);
-            lua_pushboolean(L, 0);
-            return 1;
-        }
+
+    if (dest && !dbus_message_set_destination(msg, dest)) {
+        luaA_warn(L, "your D-Bus method error failed to set destination");
+        return 0;
     }
-    dbus_connection_send(dbus_connection, msg, NULL);
-    dbus_message_unref(msg);
-    dbus_connection_flush(dbus_connection);
-    lua_pushboolean(L, 1);
-    return 1;
+    dbus_message_set_auto_start(msg, TRUE);
+
+    return _send_dbus_message_with_lua_args(L, dbus_connection, msg, 6);
 }
 
 const struct luaL_Reg awesome_dbus_lib[] =
@@ -864,6 +909,7 @@ const struct luaL_Reg awesome_dbus_lib[] =
     { "connect_signal", luaA_dbus_connect_signal },
     { "disconnect_signal", luaA_dbus_disconnect_signal },
     { "emit_signal", luaA_dbus_emit_signal },
+    { "method_call", luaA_dbus_method_call },
     { "__index", luaA_default_index },
     { "__newindex", luaA_default_newindex },
     { NULL, NULL }
